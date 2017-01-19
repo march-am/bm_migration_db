@@ -5,7 +5,11 @@ require 'json'
 require 'sqlite3'
 require 'csv'
 
-require 'bm_id' # ログイン用ID/PASS用 (mail, passwd)
+require 'bm_id'
+# ログイン用ID/PASS用ファイル
+# mail = 'mail@mail.com'
+# passwd = 'pass'
+
 
 # リニューアル対応版
 
