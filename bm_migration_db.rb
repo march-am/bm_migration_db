@@ -5,11 +5,11 @@ require 'json'
 require 'sqlite3'
 require 'csv'
 
+require 'bm_id' # ログイン用ID/PASS用 (mail, passwd)
+
 # リニューアル対応版
 
 dbfile = 'bookdata.db'
-mail = 'name'
-passwd = 'pass'
 
 userid = ''
 base_url = 'https://elk.bookmeter.com'
