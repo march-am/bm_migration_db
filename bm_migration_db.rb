@@ -5,6 +5,11 @@ require 'json'
 require 'sqlite3'
 require 'csv'
 
+require './setting'
+# ログイン用ID/PASS用ファイル
+# mail = 'mail@mail.com'
+# passwd = 'pass'
+
 # リニューアル対応版
 
 dbfile = 'bookdata.db'
@@ -118,17 +123,17 @@ class BookInfo
           #   "id":"js_modal_bd4910540a26ea4f0ebfee8286b81dc0" }
         else
           bookdata = page.search("//div[@class='books sidebar']/section[1]/div[2]/ul/li[1]/div/@data-modal").gsub(/&quot;/,'"')
-        # { "book":{
-        #     "id":10161392,
-        #     "asin":"4839956758",
-        #     "title":"フロントエンドエンジニアのための現在とこれからの必須知識",
-        #     "author":"斉藤 祐也,水野 隼登,谷 拓樹,菅原 のびすけ,林 優一,古沢 宏太",
-        #     "page":224,
-        #     "book_path":"/books/10161392",
-        #     "image_url":"https://images-na.ssl-images-amazon.com/images/I/51iaxDyyhgL._SL120_.jpg",
-        #     "amazon_url":"https://www.amazon.co.jp/dp/product/(略)
-        #   },
-        #   "id":"js_modal_15c5187b040ce64b6a1b108e946e5ccd" }
+          # { "book":{
+          #     "id":10161392,
+          #     "asin":"4839956758",
+          #     "title":"フロントエンドエンジニアのための現在とこれからの必須知識",
+          #     "author":"斉藤 祐也,水野 隼登,谷 拓樹,菅原 のびすけ,林 優一,古沢 宏太",
+          #     "page":224,
+          #     "book_path":"/books/10161392",
+          #     "image_url":"https://images-na.ssl-images-amazon.com/images/I/51iaxDyyhgL._SL120_.jpg",
+          #     "amazon_url":"https://www.amazon.co.jp/dp/product/(略)
+          #   },
+          #   "id":"js_modal_15c5187b040ce64b6a1b108e946e5ccd" }
         end
 
         ss, st = [],[]
@@ -253,7 +258,7 @@ class BookInfo
         #http://webservice.rakuten.co.jp/api/bookstotalsearch/をたたけば書影なども取れそう
     end
     out
-end
+  end
 
   def temp_mediamarker
     out = []
@@ -272,6 +277,7 @@ end
 
   # SaveInfo
   def save_CSV
+    #save
   end
 
-end
+end #class BookInfo end
