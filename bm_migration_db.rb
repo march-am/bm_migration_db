@@ -13,8 +13,6 @@ require './setting'
 # リニューアル対応版
 
 dbfile = 'bookdata.db'
-mail = 'name'
-passwd = 'pass'
 
 userid = ''
 base_url = 'https://elk.bookmeter.com'
