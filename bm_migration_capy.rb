@@ -18,6 +18,7 @@ require './setting'
 # リニューアル対応版
 
 # $DEBUG = 1
+
 $log = Logger.new(STDOUT)
 $log.level = Logger::DEBUG
 
@@ -51,7 +52,31 @@ class BookInfo
       @w_org = 1  # 1=>オリジナル含む 0=>含まない
   end
 
-  # GetInfo
+  def get_nokogiri_doc(url)
+    begin
+      if $DEBUG
+        html = open(url) #, :proxy => 'http://localhost:5432')
+      else
+        html = open(url)
+      end
+    rescue OpenURI::HTTPError
+      return
+    end
+    Nokogiri::HTML(html, nil, 'utf-8')
+  end
+
+  def get_nokogiri_doc_from_html(html)
+    Nokogiri::HTML(html, nil, 'utf-8')
+  end
+
+  def wait_for_ajax
+    Timeout.timeout(Capybara.default_max_wait_time) do
+      active = page.evaluate_script('jQuery.active')
+      until active == 0
+        active = page.evaluate_script('jQuery.active')
+      end
+    end
+  end
 
   def login
     page.driver.headers = { 'User-Agent' => 'Mac Safari' }
@@ -69,17 +94,16 @@ class BookInfo
   end
 
   def get_user_id
-
     if @userid.empty?
-        @session.visit(@base_url + '/home')
-        a = @session.find(:xpath, "//dt[@class='user-profiles__avatar']/a/@href")
-        @userid = a.to_s[7..-1]
+        visit(@base_url + '/home')
+        a = page.find('dt.user-profiles__avatar > a')['href']
+        @userid = a.to_s.gsub('https://elk.bookmeter.com/users/','')
+        # https://elk.bookmeter.com/users/*****
     end
     $log.debug("id is #{@userid}")
-
   end
 
-  def crawl_all_ID
+  def fetch_ids
     bIDs = []
 
     @list_type.each do |type|
@@ -94,13 +118,14 @@ class BookInfo
                 bID = node.to_s[7..-1]
                 bIDs.push(bID)
             end
-            $log.debug("crawled #{type}-page#{i}.")
+            $log.debug("fetch #{type}-page#{i}.")
             sleep(1)
         end
-        $log.debug("crawled all page of #{type}.")
+        $log.debug("fetch all page of [#{type}].")
     end
-    bIDs.uniq
-    $log.debug("crawled all ID.")
+    bIDs.uniq!
+    $log.debug("fetch all ID: #{bIDs}")
+    return bIDs
   end
 
   def get_page_max(html)
@@ -110,19 +135,6 @@ class BookInfo
     return max
   end
 
-  def get_nokogiri_doc(url)
-    begin
-      if $DEBUG
-        html = open(url, :proxy => 'http://localhost:5432')
-      else
-        html = open(url)
-      end
-    rescue OpenURI::HTTPError
-      return
-    end
-    Nokogiri::HTML(html, nil, 'utf-8')
-  end
-
   def fetch_bookdata_json(ids)
     bookdata = []
     # 本ごとの情報取得
@@ -130,14 +142,18 @@ class BookInfo
         # wait_for_ajax
         each_book_url = @base_url + '/books/' + id
         page.visit each_book_url
+        doc = get_nokogiri_doc_from_html(page.html)
 
         begin
-          _bookdata = page.find("div.read-book__action > div > div")['data-modal']
-          _bookdata = JSON.parse(_bookdata)
+          json = doc.search("//div[@class='read-book__action']/div/div/@data-modal").to_s
+          json = doc.search("//section[@class='sidebar__group']/div[2]/ul/li[1]/div/@data-modal").to_s if json.empty?
+         p json
         rescue Capybara::ElementNotFound => e
-          _bookdata = {}
+          json = doc.search("//section[@class='sidebar__group']/div[2]/ul/li[1]/div/@data-modal").to_s
+          p json
         end
-
+        json = json.gsub(/[\r\n]/m, '' )
+        _bookdata = JSON.parse(json)
         _bookdata['status'] = get_book_status # 0 読んだ < 1 読んでる < 2 積読 <  3 読みたい
         bookdata.push _bookdata
         # { "read_book_id":59720696,
@@ -163,10 +179,14 @@ class BookInfo
     bookdata
   end
 
+  def fetch_stocked_data
+
+  end
+
   def get_book_status
     status = []
-    doc = Nokogiri::HTML(page.html)
-    classes = doc.search(:xpath, "//section[@class='sidebar__group']/div[2]/ul/li/@class")
+    doc = get_nokogiri_doc_from_html(page.html)
+    classes = doc.search("//section[@class='sidebar__group']/div[2]/ul/li/@class")
     classes.each_with_index do |st, idx|
       status.push(idx) if st.to_s.include?('active')
     end
@@ -175,19 +195,10 @@ class BookInfo
 
   def scrape
     login
-    ids = ['5148925'] # crawl_all_ID
-    bookinfos = fetch_bookdata_json(ids)
-    $log.debug(bookinfos)
-    # crawlInfo = crawl_info(crawlID)
-  end
-
-  def wait_for_ajax
-    Timeout.timeout(Capybara.default_max_wait_time) do
-      active = page.evaluate_script('jQuery.active')
-      until active == 0
-        active = page.evaluate_script('jQuery.active')
-      end
-    end
+    # get_user_id
+    ids = ["11121227", "8134811"] #fetch_ids
+    bookdatas = fetch_bookdata_json(ids)
+    $log.debug(bookdatas)
   end
 
 end
