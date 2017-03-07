@@ -35,14 +35,23 @@ Capybara.register_driver :poltergeist do |app|
   Capybara::Poltergeist::Driver.new(app, {:js_errors => false, :timeout => 5000 })
 end
 
+class String
+  def sjisable
+    str = self
+    #変換テーブル上の文字を下の文字に置換する
+    from_chr = "\u{301C 2212 00A2 00A3 00AC 2013 2014 2016 203E 00A0 00F8 203A}"
+    to_chr   = "\u{FF5E FF0D FFE0 FFE1 FFE2 FF0D 2015 2225 FFE3 0020 03A6 3009}"
+    str.tr!(from_chr, to_chr)
+    #変換テーブルから漏れた不正文字は?に変換し、さらにUTF8に戻すことで今後例外を出さないようにする
+    str = str.encode("Windows-31J","UTF-8",:invalid => :replace,:undef=>:replace).encode("UTF-8","Windows-31J")
+  end
+end #http://qiita.com/yugo-yamamoto/items/0c12488447cb8c2fc018
+
 class BookInfo
 
   include Capybara::DSL
 
   def initialize
-      @agent = Mechanize.new do |agent|
-        agent.user_agent_alias = 'Windows IE 7'
-      end
       # @dbfile = 'bookdata.db'
       @user_id = ''
       @base_url = 'https://elk.bookmeter.com'
@@ -81,7 +90,6 @@ class BookInfo
 
   def login
     page.driver.headers = { 'User-Agent' => 'Mac Safari' }
-
     if page.driver.browser.cookies.empty?
       $log.debug("started login.")
       visit @login_url
@@ -106,22 +114,21 @@ class BookInfo
 
   def fetch_ids
     bIDs = []
-
     @list_type.each do |type|
-        list_url = @my_url + '/' + (@user_id).to_s + '/books/' + type
-        page_max = get_page_max(list_url)
-        $log.debug("#{type}'s pagemax is #{page_max}.")
-        (1..page_max).each do |i|
-            each_list_url = list_url + '?page=' + i.to_s
-            page = get_nokogiri_doc(each_list_url)
-            page.search("//div[@class='thumbnail__cover']/a/@href").each do |node|
-                bID = node.to_s[7..-1]
-                bIDs.push(bID)
-            end
-            $log.debug("fetch #{type}: page #{i}.")
-            sleep(1)
+      list_url = @my_url + '/' + (@user_id).to_s + '/books/' + type
+      page_max = get_page_max(list_url)
+      $log.debug("#{type}'s pagemax is #{page_max}.")
+      (1..page_max).each do |i|
+        each_list_url = list_url + '?page=' + i.to_s
+        page = get_nokogiri_doc(each_list_url)
+        page.search("//div[@class='thumbnail__cover']/a/@href").each do |node|
+          bID = node.to_s[7..-1]
+          bIDs.push(bID)
         end
-        $log.debug("fetch all page of [#{type}].")
+        $log.debug("fetch #{type}: page #{i}.")
+        sleep(1)
+      end
+      $log.debug("fetch all page of [#{type}].")
     end
     bIDs.uniq!
     $log.info("fetch all ID: #{bIDs}")
@@ -143,23 +150,25 @@ class BookInfo
     bookdata = []
     # 本ごとの情報取得
     ids.each_with_index do |id, idx|
-        # wait_for_ajax
-        each_book_url = @base_url + '/books/' + id
-        page.visit each_book_url
-        doc = get_nokogiri_doc_from_html(page.html)
-
-        begin
-          json = doc.search("//div[@class='read-book__action']/div/div/@data-modal").to_s
-          # 「読んだ本」に登録されていない場合
-          json = doc.search("//section[@class='sidebar__group']/div[2]/ul/li[1]/div/@data-modal").to_s if json.empty?
-        rescue Capybara::ElementNotFound => e
-            $log.error("書籍情報が取得できませんでした。book_id: #{id}")
-        end
-        json = json.gsub(/[\r\n]/m, '' )
-        _bookdata = JSON.parse(json)
-        _bookdata['status'] = get_book_status # 0 読んだ < 1 読んでる < 2 積読 <  3 読みたい
-        bookdata.push _bookdata
-        $log.info("fetched: #{_bookdata['book']['title']} (#{id}) (#{idx}/#{ids.size})")
+      # wait_for_ajax
+      each_book_url = @base_url + '/books/' + id
+      page.visit each_book_url
+      doc = get_nokogiri_doc_from_html(page.html)
+      begin
+        # 複数modalがあるときにどうするのか。＝＞先に登場するほう（新しい方）を活かす（とりあえず）
+        json = doc.search("//div[@class='read-book__action']/div/div/@data-modal")[0].to_s
+        # 「読んだ本」に登録されていない場合
+        json = doc.search("//section[@class='sidebar__group']/div[2]/ul/li[1]/div/@data-modal")[0].to_s if json.empty?
+      rescue Capybara::ElementNotFound => e
+        $log.error("書籍情報が取得できませんでした。book_id: #{id}")
+        next
+      end
+      json = json.gsub(/[\r\n]/m, '' )
+      _bookdata = JSON.parse(json)
+      _bookdata['status'] = get_book_status # 0 読んだ < 1 読んでる < 2 積読 <  3 読みたい
+      bookdata.push _bookdata
+      $log.info("fetched: #{_bookdata['book']['title']} [#{id}] (#{idx+1}/#{ids.size})")
+      sleep(0.5)
     end
     bookdata
   end
@@ -174,28 +183,6 @@ class BookInfo
     status
   end
 
-  def load_text(text_path)
-    if File.exist?(text_path)
-      File.open(text_path, 'r') do |f|
-        return f.readlines
-      end
-    else
-      $log.error("#{text_path} does not exist!")
-      exit(1)
-    end
-  end
-
-  def save_to_text(bookdatas, text_path)
-    if File.exist?(text_path)
-      $log.error("#{text_path} already exists.")
-    else
-      File.open(text_path, 'w') do |f|
-        f.puts bookdatas
-      end
-      $log.info("#{text_path} is saved.")
-    end
-  end
-
   def scrape
     login
     get_user_id
@@ -204,88 +191,161 @@ class BookInfo
     return bookdatas
   end
 
+  def load_text(text_path)
+    if File.exist?(text_path)
+      arr = []
+      File.open(text_path, 'r') do |f|
+        f.each_line do |line|
+          arr << eval(line)
+        end
+      end
+      return arr
+    else
+      $log.error("#{text_path} does not exist!")
+      exit(1)
+    end
+  end
+
+  def save_to_text(bookdatas, path)
+    # if File.exist?(text_path)
+    #   $log.error("#{text_path} already exists.")
+    # else
+      File.open("#{path}.txt", 'w') do |f|
+        f.puts bookdatas
+      end
+      $log.info("#{path}.txt is saved.")
+    # end
+  end
+
+  def save_to_csv(lines, path)
+    # if File.exist?(text_path)
+    #   $log.error("#{text_path} already exists.")
+    # else
+      CSV.open("#{path}.csv", "w:windows-31j", force_quotes: true) do |file|
+        lines.each { |row| file << row }
+      end
+      $log.info("#{path}.csv is saved.")
+    # end
+  end
+
   def save_bookdatas(bookdatas)
-    text_path = "#{@user_id}_bookdata_#{Time.now.strftime('%F')}.txt"
+    text_path = "#{@user_id}_bookdata_#{Time.now.strftime('%F')}"
     # t = load_text(text_path)
     save_to_text(bookdatas, text_path)
   end
 
-  def convert_bookdatas(bookdatas, service)
-    out = []
-    text_path = "#{@user_id}_#{service}_#{Time.now.strftime('%F')}.csv"
-    case service
-    # when 'bookmeter'     then out = temp_BM(bookdatas)
-    when 'biblia'             then out = temp_biblia(bookdatas)
-    when 'mediamarker' then out = temp_mediamarker(bookdatas)
-    when 'debug'            then out = temp_debug(bookdatas)
-    else
-      puts '正しいサービスIDを指定してください'
-      exit(1)
+  def save_chunks_to_csv(bookdatas, data_each_chunk, path, service)
+    # data_each_chunk個ずつファイルを分割
+    book_num = bookdatas.size
+    chunk_num = (book_num / data_each_chunk).to_i
+    (0..chunk_num).each do |ci| # data_each_chunk個ずつファイルを分割
+      start_n = 100 * ci
+      if start_n + 99 <= book_num
+        end_n = start_n + 99
+      else
+        end_n = book_num - start_n
+      end
+      range = bookdatas[start_n..end_n]
+      lines = send("temp_#{service}", range)
+      text_path = "#{path}_#{'%02d' % ci}"
+      save_to_csv(lines, text_path)
     end
-    p out
-    # save_to_text(out, text_path)
-    $log.info("#{text_path} is saved!")
   end
 
-  # def temp_BM(bookdatas)
-  #   out = []
-  #   div = 100 #100ずつ分けた方がいい？
-  #     (0..@book_n).each do |i|
-  #         rdate = "#{books[i][:ry]}-#{books[i][:rm]}-#{books[i][:rd]} 00:00:00"
-  #         case books[i][:st].max
-  #             when 4 then status = '読み終わった'
-  #             when 3 then status = 'いま読んでる'
-  #             when 2 then status = '積読'
-  #             when 1 then status = '読みたい'
-  #             else status = ''
-  #         end
-  #         out << ['1', books[i][:bookID], '', category, books[i][:rrank], status, books[i][:review], books[i][:tag], books[i][:memo], rdate, rdate]
-  #         # puts "#{i+1}冊取得"
-  #     out
-  #   end
-  # end
+  def convert_bookdatas(bookdatas, service)
+    lines = []
+    text_path = "#{@user_id}_#{service}_#{Time.now.strftime('%F')}"
+
+    case service
+      when 'booklog'
+        save_chunks_to_csv(bookdatas, 100, text_path, 'booklog')
+      when 'mediamarker'
+        save_chunks_to_csv(bookdatas, 100, text_path, 'mediamarker')
+      when 'biblia'
+        lines = temp_biblia(bookdatas)
+        save_to_csv(lines, text_path)
+      when 'debug'
+        lines = temp_debug(bookdatas)
+      else
+        puts '正しいサービスIDを指定してください'
+        exit(1)
+    end
+  end
 
   def temp_biblia(bookdatas)
     out = []
     ndate = Time.now.strftime("%D")
     bookdatas.each do |book|
-      case book['status'].max
-          # 本棚(0)/読みたい(1)
-          when 4, 3 ,2 then status = 0
-          when 1 then status = 1
-          else status = 1
+      case book['status'].max # 本棚(0)/読みたい(1)
+        when 4, 3, 2 then status = 0
+        when 1 then       status = 1
+        else              status = 1
       end
-      title = book['book']['title']
-      author = book['book']['author']
-      rdate = book['book']['review'].nil? ? '' : book['book']['review']['read_at'].gsub('-','/')
-      rank = book['book']['bookcases'].nil? ? '' : book['book']['bookcases'].select{ |i| i.include?('☆') }.gsub('☆','').to_i
-      isbn13 = 'dummy' #convert_asin_to_isbn13(book['book']]['asin'])
-      review = book.has_key?(:text) ? book['book']['review']['text'] : ''
-      image_url = book.has_key?(:image_url) ? book['book']['image_url'] : ''
-      store_url = book.has_key?(:amazon_url) ? book['book']['amazon_url'] : ''
+      title     = book['book']['title']
+      author    = book['author']
+      isbn13    = book['book']['asin'] #convert_asin_to_isbn13(book['book']]['asin'])
+      rdate     = book['review']['read_at'].nil?  ? '' : book['review']['read_at'].gsub('-','/')
+      tag       = book['bookcases'].nil?          ? '' : book['bookcases']
+      review    = book['review']['text'].nil?     ? '' : book['review']['text']
+      image_url = book['book']['image_url'].nil?  ? '' : book['book']['image_url']
+      store_url = book['book']['amazon_url'].nil? ? '' : book['book']['amazon_url']
+      r         = tag.select{ |i| i.include?('☆') }
+      rank      = r[0].to_s.gsub('☆','').to_i
 
-      out << [ title, '', author, '', '', isbn13, rdate, '', review, image_url, store_url, ndate, status, rank ]
-      #タイトル, タイトル仮名(※未使用), 著者, 著者仮名(※未使用), 出版社, ISBN-13, 日付(yyyy/MM/dd), メモ, 感想, 表紙画像URL, 楽天商品リンク, データ登録日(yyyy/mm/dd), 本棚(0)/読みたい(1), 星評価(0〜5)
+      out << [title, nil, author, nil, nil, isbn13, rdate, tag, review, image_url, store_url, ndate, status, rank]
+      #タイトル, タイトル仮名(※未使用), 著者, 著者仮名(※未使用), 出版社, ISBN-13, 日付(yyyy/MM/dd), メモ=>タグ, 感想, 表紙画像URL, 楽天商品リンク, データ登録日(yyyy/mm/dd), 本棚(0)/読みたい(1), 星評価(0〜5)
     end
-    out
+    return out
+  end
+
+  def temp_booklog(bookdatas)
+    out = []
+    ndate = Time.now.strftime("%D")
+    bookdatas.each do |book|
+      case book['status'].max
+        when 4 then status_text = '読み終わった'
+        when 3 then status_text = 'いま読んでる'
+        when 2 then status_text = '積読'
+        when 1 then status_text = '読みたい'
+        else        status_text = ''
+      end
+      asin   = book['book']['asin']
+      isbn13 = convert_asin_to_isbn13(asin)
+      tag    = book['bookcases'].nil? ? '' : book['bookcases']
+      r      = tag.select{ |i| i.include?('☆') }
+      rank   = r[0].to_s.gsub('☆','').to_i
+      review = book['review']['text'].nil? ? '' : book['review']['text'].sjisable
+      rdate  = "#{book['review']['read_at']} 00:00:00"
+
+      out << ['1', asin, nil, '-', rank, status_text, review, tag, nil, ndate, rdate]
+      # サービスID[Amzn], アイテムID, 13桁ISBN, カテゴリ, 評価, 読書状況, レビュー, タグ, 読書メモ(非公開), 登録日時, 読了日
+    end
+    return out
   end
 
   def temp_mediamarker(bookdatas)
     out = []
-    div = 100 #100ずつ分けた方がいい？
-    (0..book_n).each do |i|
-        rdate = "読了: #{books[i][:ry]}年#{books[i][:rm]}月#{books[i][:rd]}日"
-        t = [books[i][:st], books[i][:review], books[i][:memo], rdate].join(', ')
-        out << [books[i][:bookID], t]
+    bookdatas.each do |book|
+      case book['status'].max
+        when 4 then status_text = '読み終わった'
+        when 3 then status_text = 'いま読んでる'
+        when 2 then status_text = '積読'
+        when 1 then status_text = '読みたい'
+        else        status_text = ''
+      end
+      asin    = book['book']['asin']
+      tag     = book['bookcases'].nil? ? '' : book['bookcases'].join('、')
+      comment = "#{status_text}／#{book['review']['text']}／#{tag}／読了:#{book['review']['read_at']}"
+      out << [asin, comment]
     end
-    out
+    return out
   end
 
   def temp_debug(bookdatas)
     out = bookdatas[0]
   end
 
-  def convert_asin_to_isbn13(asin)
+  def convert_asin_to_isbn13(asin) #AmazonAPI使って変換
     isbn13 = asin
     return isbn13
   end
@@ -294,8 +354,7 @@ end
 #class BookInfo end
 
 bi = BookInfo.new
-p bi.fetch_bookdata_json(['9017630'])
-
-# bookdatas = bi.scrape
-# bi.save_bookdatas(bookdatas)
-# bookdatas = bi.load_text()
+bookdatas = bi.scrape
+bi.save_bookdatas(bookdatas)
+# bookdatas = bi.load_text('33029_bookdata_2017-03-06.txt')
+# bi.convert_bookdatas(bookdatas, 'mediamarker')
