@@ -50,7 +50,6 @@ class BookInfo
       @base_url = 'https://elk.bookmeter.com'
       @my_url = @base_url + '/users' + @user_id
       @login_url = @base_url + '/login'
-      @list_type = ["read", "reading", "stacked", "wish"] # 読んだ, 読んでる, 積読, 読みたい
       @w_org = 1  # 1=>オリジナル含む 0=>含まない
   end
 
@@ -105,27 +104,48 @@ class BookInfo
     $log.debug("id is #{@user_id}")
   end
 
-  def fetch_ids
-    bIDs = []
-    @list_type.each do |type|
-      list_url = @my_url + '/' + (@user_id).to_s + '/books/' + type
-      page_max = get_page_max(list_url)
-      $log.debug("#{type}'s pagemax is #{page_max}.")
-      (1..page_max).each do |i|
-        each_list_url = list_url + '?page=' + i.to_s
-        page = get_nokogiri_doc(each_list_url)
-        page.search("//div[@class='thumbnail__cover']/a/@href").each do |node|
-          bID = node.to_s[7..-1]
-          bIDs.push(bID)
+  def fetch_bookdatas
+    list_type = ['read', 'reading', 'stacked', 'wish'] # 読んだ, 読んでる, 積読, 読みたい
+    datas = []
+
+    list_type.each do |type|
+      first_list_url = @my_url + '/' + @user_id + '/books/' + type
+      page_max = get_page_max(first_list_url)
+      $log.debug("[#{type}] has #{page_max} pages.")
+      page_max = 2
+
+      if type == 'read'
+        xpath = "//div[@class='detail__edit']/div/@data-modal"
+        status = 0
+      else
+        xpath = "//section[@id='modals']/@data-modal"
+        case type
+        when 'reading' then status = 1
+        when 'stacked' then status = 2
+        when 'wish'    then status = 3
         end
-        $log.debug("fetch #{type}: page #{i}.")
+      end
+
+      (1..page_max).each do |i|
+        each_list_url = first_list_url + '?page=' + i.to_s
+        each_list_url = first_list_url + '?display_type=list&page=' + i.to_s if type == 'read'
+        page = get_nokogiri_doc(each_list_url)
+        save_and_open_page
+        page.search(xpath).each do |data|
+          json = data.to_s.gsub(/[\r\n]/m, '')
+          json = JSON.parse(json)
+          json['status'] = status
+          $log.debug("data: #{json}")
+          datas.push(json)
+        end
+        $log.debug("fetched [#{type}: page #{i}].")
         sleep(1)
       end
-      $log.debug("fetch all page of [#{type}].")
+      $log.debug("fetched all page of [#{type}].")
     end
-    bIDs.uniq!
-    $log.info("fetch all ID: #{bIDs}")
-    return bIDs
+
+    return datas = uniquefy_data(datas)
+    $log.info("fetched all data.")
   end
 
   def get_page_max(url)
@@ -139,54 +159,16 @@ class BookInfo
     return max
   end
 
-  def fetch_bookdata_json(ids)
-    bookdatas = []
-    # 本ごとの情報取得
-    ids.each_with_index do |id, idx|
-      wait_for_ajax
-      each_book_url = @base_url + '/books/' + id
-      page.visit each_book_url
-      doc = get_nokogiri_doc_from_html(page.html)
-      begin
-        # 複数modalがあるときにどうするのか。＝＞先に登場するほう（新しい方）を活かす（とりあえず）
-        json = doc.search("//div[@class='read-book__action']/div/div/@data-modal")[0].to_s
-        # 「読んだ本」に登録されていない場合
-        json = doc.search("//section[@class='sidebar__group']/div[2]/ul/li[1]/div/@data-modal")[0].to_s if json.empty?
-      rescue Capybara::ElementNotFound => e
-        $log.error("書籍情報が取得できませんでした。book_id: #{id}")
-        next
-      end
-      json = json.gsub(/[\r\n]/m, '' )
-      _bookdata = JSON.parse(json)
-      _bookdata['status'] = get_current_book_status # 0 読んだ < 1 読んでる < 2 積読 <  3 読みたい
-      bookdatas.push _bookdata
-      $log.info("fetched: #{_bookdata['book']['title']} [#{id}] (#{idx+1}/#{ids.size})")
-
-      sleep(3)
-      if (idx + 1) % 20 == 0 && (idx + 1) != 0
-        $log.info('wait 60 secs every 20 books')
-        sleep(60)
-      end
-    end
-    bookdatas
-  end
-
-  def get_current_book_status
-    status = []
-    doc = get_nokogiri_doc_from_html(page.html)
-    classes = doc.search("//section[@class='sidebar__group']/div[2]/ul/li/@class")
-    classes.each_with_index do |st, idx|
-      status.push(idx) if st.to_s.include?('active')
-    end
-    status
+  def uniquefy_data(datas)
+    # a) datas(array).each do |data| data['book']['id'] が同じかどうか。同じなら book['status'] が大きい方を削除。
+    # b) data['book']['id']とbook['status']をキーにソート。その後、一つ前のデータと比較して同じidを持ってれば＝book['status'] が大きい方を削除。
+    datas
   end
 
   def scrape
     login
     get_user_id
-    ids = fetch_ids
-    bookdatas = fetch_bookdata_json(ids)
-    return bookdatas
+    bookdatas = fetch_bookdatas
   end
 
   def load_text(path)
@@ -375,5 +357,4 @@ end
 
 bi = BookInfo.new
 bookdatas = bi.scrape
-bi.save_bookdatas(bookdatas)
-bi.convert_and_save_bookdatas(bookdatas, 'booklog')
+p bookdatas
